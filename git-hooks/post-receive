@@ -1,0 +1,50 @@
+#!/bin/sh
+#
+# Post-receive script
+
+REPO_NAME="repo-name"
+PRODUCTION_DIR="/var/www/$REPO_NAME"
+BUILD_DIR="/var/build/$REPO_NAME"
+TEMP_BUILD_DIR="/var/build/tmp/$REPO_NAME"
+GIT_DIR="/var/repo/$REPO_NAME.git"
+BRANCH="main"
+LOG_FILE="$GIT_DIR/logs/post-receive.log"
+
+while read oldrev newrev ref; do
+	if [[ "$ref" == "refs/heads/$BRANCH" ]]; then
+		USER_EMAIL=$( git log -1 --format=format:%ae HEAD )
+		USER_NAME=$( git log -1 --format=format:%an HEAD )
+
+		echo -e "Received push request at $( date '+%Y-%m-%d %H:%M:%S' ) by $USER_NAME ($USER_EMAIL)" | tee -a "$LOG_FILE"
+		echo "Old SHA: $oldrev, New SHA: $newrev" | tee -a "$LOG_FILE"
+
+		cd "$BUILD_DIR"
+
+		git --work-tree="$BUILD_DIR" --git-dir="$GIT_DIR" checkout -f "$BRANCH"
+		git --work-tree="$BUILD_DIR" --git-dir="$GIT_DIR" submodule update --init --recursive
+
+		echo "Node version is $( node --version )" | tee -a "$LOG_FILE"
+		echo "Yarn version $( yarn --version )" | tee -a "$LOG_FILE"
+
+		echo "Making a copy of the existing production code..."
+		cp -R "$BUILD_DIR/." "$TEMP_BUILD_DIR"
+		rm "$PRODUCTION_DIR"
+		ln -s "$TEMP_BUILD_DIR" "$PRODUCTION_DIR"
+
+		echo "Building the new production code..." | tee -a "$LOG_FILE"
+		echo "This might take a while..."
+		yarn --pure-lockfile
+		yarn build | tee -a "$LOG_FILE"
+
+		echo "Linking the new production build to the web server..."
+		rm "$PRODUCTION_DIR"
+		ln -s "$BUILD_DIR" "$PRODUCTION_DIR"
+
+		echo "Cleaning up..."
+		rm -rf "$TEMP_BUILD_DIR"
+
+		echo "Finished code deployment at $( date '+%Y-%m-%d %H:%M:%S' )" | tee -a "$LOG_FILE"
+	else
+		echo "Ref $ref received. Doing nothing: only the ${BRANCH} branch may be deployed on this server."
+	fi
+done
